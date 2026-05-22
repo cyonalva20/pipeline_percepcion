@@ -1,0 +1,17 @@
+REPORTE FINAL DEL PIPELINE DE PERCEPCIÓN
+==================================================
+Fecha: 2026-05-21 21:03:23
+Frames procesados: 343
+Total de objetos detectados: 9492
+Objetos promedio por frame: 27.7
+
+DETECCIONES POR CLASE:
+--------------------------------------------------
+  car: 4218 (44.4%) - confianza: 0.6450
+  pedestrian: 2388 (25.2%) - confianza: 0.4378
+  bus: 1684 (17.7%) - confianza: 0.6306
+  truck: 995 (10.5%) - confianza: 0.4631
+  van: 181 (1.9%) - confianza: 0.5314
+  motor: 19 (0.2%) - confianza: 0.3962
+  tricycle: 4 (0.0%) - confianza: 0.3565
+  people: 3 (0.0%) - confianza: 0.3589

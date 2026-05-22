@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "c:\\Users\\lawzz\\pipeline_percepcion\\venv\\Scripts\\python.exe",
+    "python.analysis.extraPaths": [
+        "c:\\Users\\lawzz\\pipeline_percepcion\\venv\\Lib\\site-packages"
+    ]
+}
