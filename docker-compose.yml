@@ -36,3 +36,13 @@ services:
       - KAFKA_BROKER=kafka:29092
     volumes:
       - ./data:/app/data
+
+  api-inferencia:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: api_inferencia
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./modelos:/app/modelos
