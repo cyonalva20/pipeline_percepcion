@@ -131,7 +131,19 @@ def procesar_video():
                             "y2": round(y2, 2),
                         },
                     })
+                    
+                    # Dibujar en vivo
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{nombre_clase} {confianza:.2f}", (int(x1), max(int(y1) - 10, 0)), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
+            # Mostrar la ventana en la computadora
+            cv2.imshow("Visión YOLOv8 en Vivo", frame)
+            
+            # Presiona la tecla 'q' en la ventana de video para salir
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("\n[INFO] Ventana cerrada por el usuario.")
+                break
             # Construir mensaje
             mensaje = {
                 "frame_id": frame_id,

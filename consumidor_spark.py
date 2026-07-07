@@ -21,7 +21,7 @@ from kafka.errors import NoBrokersAvailable
 BASE_DIR = Path(__file__).resolve().parent
 
 # ─── Configuración Kafka ───────────────────────────────────────────────────
-KAFKA_BROKER = "localhost:9092"
+KAFKA_BROKER = os.environ.get("KAFKA_BROKER", "localhost:9092")
 TOPIC_DETECCIONES = "detecciones-trafico"
 
 
@@ -56,7 +56,6 @@ def consumir_y_analizar():
     esperar_kafka(KAFKA_BROKER)
 
     consumer = KafkaConsumer(
-        TOPIC_DETECCIONES,
         bootstrap_servers=KAFKA_BROKER,
         auto_offset_reset="earliest",
         enable_auto_commit=True,
@@ -64,8 +63,9 @@ def consumir_y_analizar():
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         consumer_timeout_ms=30000,  # 30 segundos sin mensajes = parar
     )
+    consumer.subscribe([TOPIC_DETECCIONES, "audio-stream"])
 
-    print(f"[INFO] Consumiendo del topic '{TOPIC_DETECCIONES}'...")
+    print(f"[INFO] Consumiendo de los topics '{TOPIC_DETECCIONES}' y 'audio-stream'...")
     print(f"[INFO] Se detendrá automáticamente tras 30s sin mensajes nuevos.")
     print("-" * 70)
 
@@ -76,41 +76,59 @@ def consumir_y_analizar():
     confianza_acumulada = defaultdict(list)
     timestamp_inicio = None
     timestamp_ultimo = None
+    conteo_audio = defaultdict(int)
+    confianza_audio = defaultdict(list)
+    total_audio_mensajes = 0
 
     try:
         for mensaje in consumer:
             data = mensaje.value
+            topic = mensaje.topic
 
-            frame_id = data.get("frame_id", 0)
-            detecciones = data.get("detecciones", [])
-            timestamp = data.get("timestamp", time.time())
-            n_objetos = data.get("total_objetos", len(detecciones))
+            if topic == "audio-stream":
+                total_audio_mensajes += 1
+                clase_audio = data.get("clase_audio", "desconocido")
+                conf_audio = data.get("confianza", 0)
+                conteo_audio[clase_audio] += 1
+                confianza_audio[clase_audio].append(conf_audio)
+                
+                print(f"  [AUDIO] Segmento {data.get('segmento_id', 0):>3} | {clase_audio:<15s} (conf: {conf_audio:.2f})")
+                
+                timestamp = data.get("timestamp_sistema", time.time())
+                if timestamp_inicio is None: timestamp_inicio = timestamp
+                timestamp_ultimo = timestamp
 
-            if timestamp_inicio is None:
-                timestamp_inicio = timestamp
-            timestamp_ultimo = timestamp
+            elif topic == TOPIC_DETECCIONES:
+                frame_id = data.get("frame_id", 0)
+                detecciones = data.get("detecciones", [])
+                timestamp = data.get("timestamp", time.time())
+                n_objetos = data.get("total_objetos", len(detecciones))
 
-            total_frames += 1
-            total_objetos += n_objetos
+                if timestamp_inicio is None:
+                    timestamp_inicio = timestamp
+                timestamp_ultimo = timestamp
 
-            # Acumular estadísticas por clase
-            for det in detecciones:
-                clase = det.get("clase", "desconocido")
-                conf = det.get("confianza", 0)
-                conteo_clases[clase] += 1
-                confianza_acumulada[clase].append(conf)
+                total_frames += 1
+                total_objetos += n_objetos
 
-            # Mostrar resumen del frame
-            clases_frame = defaultdict(int)
-            for d in detecciones:
-                clases_frame[d.get("clase", "?")] += 1
+                # Acumular estadísticas por clase
+                for det in detecciones:
+                    clase = det.get("clase", "desconocido")
+                    conf = det.get("confianza", 0)
+                    conteo_clases[clase] += 1
+                    confianza_acumulada[clase].append(conf)
 
-            resumen = ", ".join(f"{v} {k}" for k, v in clases_frame.items())
+                # Mostrar resumen del frame
+                clases_frame = defaultdict(int)
+                for d in detecciones:
+                    clases_frame[d.get("clase", "?")] += 1
 
-            print(
-                f"  [Frame {frame_id:>5}] "
-                f"{n_objetos:>3} objetos | {resumen}"
-            )
+                resumen = ", ".join(f"{v} {k}" for k, v in clases_frame.items())
+
+                print(
+                    f"  [VIDEO Frame {frame_id:>5}] "
+                    f"{n_objetos:>3} objetos | {resumen}"
+                )
 
             # Cada 20 frames, mostrar estadísticas acumuladas
             if total_frames % 20 == 0:
@@ -166,17 +184,31 @@ def consumir_y_analizar():
             )
         print("  " + "-" * 55)
 
+        if total_audio_mensajes > 0:
+            print()
+            print("  SONIDO URBANO (CNN):")
+            print("  " + "-" * 55)
+            print(f"  {'Clase Audio':<20s} | {'Segmentos':>9} | {'% del total':>10} | {'Conf. prom':>10}")
+            print("  " + "-" * 55)
+            for clase, conteo in sorted(conteo_audio.items(), key=lambda x: x[1], reverse=True):
+                porcentaje = (conteo / total_audio_mensajes * 100)
+                confs = confianza_audio[clase]
+                avg_conf = sum(confs) / len(confs) if confs else 0
+                print(f"  {clase:<20s} | {conteo:>9} | {porcentaje:>9.1f}% | {avg_conf:>10.4f}")
+            print("  " + "-" * 55)
+
         # Guardar reporte en archivo
         reporte_path = BASE_DIR / "data" / "reporte_pipeline.txt"
         with open(reporte_path, "w", encoding="utf-8") as f:
-            f.write("REPORTE FINAL DEL PIPELINE DE PERCEPCIÓN\n")
-            f.write("=" * 50 + "\n")
+            f.write("REPORTE FINAL DEL PIPELINE MULTIMODAL (VIDEO + AUDIO)\n")
+            f.write("=" * 55 + "\n")
             f.write(f"Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Frames procesados: {total_frames}\n")
             f.write(f"Total de objetos detectados: {total_objetos}\n")
-            f.write(f"Objetos promedio por frame: {total_objetos / total_frames:.1f}\n\n")
-            f.write("DETECCIONES POR CLASE:\n")
-            f.write("-" * 50 + "\n")
+            f.write(f"Objetos promedio por frame: {total_objetos / total_frames:.1f}\n")
+            if duracion > 0: f.write(f"Duración: {duracion:.1f} segundos\n")
+            f.write("\n1. DETECCIONES VEHICULARES (YOLOv8):\n")
+            f.write("-" * 55 + "\n")
             for clase, conteo in sorted(
                 conteo_clases.items(), key=lambda x: x[1], reverse=True
             ):
@@ -184,6 +216,15 @@ def consumir_y_analizar():
                 confs = confianza_acumulada[clase]
                 avg_conf = sum(confs) / len(confs) if confs else 0
                 f.write(f"  {clase}: {conteo} ({porcentaje:.1f}%) - confianza: {avg_conf:.4f}\n")
+                
+            if total_audio_mensajes > 0:
+                f.write("\n2. CLASIFICACIÓN DE AUDIO (CNN):\n")
+                f.write("-" * 55 + "\n")
+                for clase, conteo in sorted(conteo_audio.items(), key=lambda x: x[1], reverse=True):
+                    porcentaje = (conteo / total_audio_mensajes * 100)
+                    confs = confianza_audio[clase]
+                    avg_conf = sum(confs) / len(confs) if confs else 0
+                    f.write(f"  {clase}: {conteo} segmentos ({porcentaje:.1f}%) - confianza: {avg_conf:.4f}\n")
 
         print(f"\n  [OK] Reporte guardado en: {reporte_path}")
     else:
@@ -195,124 +236,181 @@ def consumir_y_analizar():
 # ─── Función opcional: Consumidor con PySpark ───────────────────────────────
 def consumir_con_spark():
     """
-    Versión alternativa usando PySpark Structured Streaming.
-    Requiere configuración adicional de winutils en Windows.
-
-    Para usar esta versión:
-    1. Descargar winutils.exe de:
-       https://github.com/steveloughran/winutils/tree/master/hadoop-3.0.0/bin
-    2. Crear carpeta C:\\hadoop\\bin y colocar winutils.exe ahí
-    3. Configurar variable de entorno HADOOP_HOME=C:\\hadoop
-    4. Agregar C:\\hadoop\\bin al PATH
-    5. Instalar pyspark: pip install pyspark
+    Versión oficial y corregida usando PySpark Structured Streaming.
+    Procesa de forma nativa y paralela los streams de Video y Audio.
     """
     try:
-        # Configurar Hadoop para Windows
+        # 1. Configuración del entorno (Se mantiene por compatibilidad local)
         hadoop_home = os.environ.get("HADOOP_HOME", r"C:\hadoop")
         os.environ["HADOOP_HOME"] = hadoop_home
         os.environ["PATH"] = os.environ["PATH"] + ";" + os.path.join(hadoop_home, "bin")
 
-        from pyspark.sql import SparkSession
-        from pyspark.sql.functions import from_json, col, explode, window
-        from pyspark.sql.types import (
-            StructType, StructField, StringType, FloatType,
-            IntegerType, ArrayType, DoubleType, TimestampType,
+        from pyspark.sql import SparkSession  # type: ignore
+        from pyspark.sql.functions import from_json, col, explode  # type: ignore
+        from pyspark.sql.types import StructType, StructField, StringType, FloatType, IntegerType, ArrayType, DoubleType  # type: ignore
+        import threading
+
+        # 2. Inicializar la sesión de Spark
+        spark = (
+            SparkSession.builder
+            .appName("PipelinePercepcion-Consumidor-Multimodal")
+            .master("local[*]")
+            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
+            .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
+            .getOrCreate()
         )
+        spark.snarkContext.setLogLevel("ERROR") if hasattr(spark, 'snarkContext') else spark.sparkContext.setLogLevel("ERROR")
 
-        # Esquema del JSON que envía el productor
+        # ─── DEFINICIÓN DE ESQUEMAS ─────────────────────────────────────────
+        # Esquema para las detecciones de Video (YOLOv8)
         schema_bbox = StructType([
-            StructField("x1", FloatType()),
-            StructField("y1", FloatType()),
-            StructField("x2", FloatType()),
-            StructField("y2", FloatType()),
+            StructField("x1", FloatType()), StructField("y1", FloatType()),
+            StructField("x2", FloatType()), StructField("y2", FloatType())
         ])
-
         schema_deteccion = StructType([
             StructField("clase", StringType()),
             StructField("clase_id", IntegerType()),
             StructField("confianza", FloatType()),
-            StructField("bbox", schema_bbox),
+            StructField("bbox", schema_bbox)
         ])
-
-        schema_mensaje = StructType([
+        schema_video = StructType([
             StructField("frame_id", IntegerType()),
             StructField("timestamp", DoubleType()),
             StructField("timestamp_legible", StringType()),
             StructField("total_objetos", IntegerType()),
-            StructField("detecciones", ArrayType(schema_deteccion)),
+            StructField("detecciones", ArrayType(schema_deteccion))
         ])
 
-        # Crear sesión Spark
-        spark = (
-            SparkSession.builder
-            .appName("PipelinePercepcion-Consumidor")
-            .master("local[*]")
-            .config("spark.jars.packages",
-                    "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
-            .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
-            .getOrCreate()
-        )
+        # Esquema para las detecciones de Audio (CNN) - Coincide exactamente con tu productor_audio.py
+        schema_audio = StructType([
+            StructField("segmento_id", IntegerType()),
+            StructField("timestamp_video", DoubleType()),
+            StructField("timestamp_sistema", DoubleType()),
+            StructField("clase_audio", StringType()),
+            StructField("confianza", FloatType())
+        ])
 
-        spark.sparkContext.setLogLevel("WARN")
-
-        # Leer stream de Kafka
-        df_kafka = (
+        # 3. Lectura unificada de Kafka suscribiéndose a AMBOS tópicos
+        df_kafka_raiz = (
             spark.readStream
             .format("kafka")
             .option("kafka.bootstrap.servers", KAFKA_BROKER)
-            .option("subscribe", TOPIC_DETECCIONES)
-            .option("startingOffsets", "earliest")
+            .option("subscribe", f"{TOPIC_DETECCIONES},audio-stream") # Suscripción simultánea
+            .option("startingOffsets", "latest")
             .load()
         )
 
-        # Parsear JSON
-        df_parsed = (
-            df_kafka
-            .selectExpr("CAST(value AS STRING) as json_str")
-            .select(from_json(col("json_str"), schema_mensaje).alias("data"))
+        # Convertir datos crudos a String
+        df_strings = df_kafka_raiz.selectExpr("CAST(topic AS STRING) as item_topic", "CAST(value AS STRING) as json_str")
+
+        # 4. Separación y Deserialización de Flujos mediante filtrado de Tópicos
+        # Flujo A: Video
+        df_video_parsed = (
+            df_strings.filter(col("item_topic") == TOPIC_DETECCIONES)
+            .select(from_json(col("json_str"), schema_video).alias("data"))
+            .select("data.*")
+        )
+        
+        # Flujo B: Audio
+        df_audio_parsed = (
+            df_strings.filter(col("item_topic") == "audio-stream")
+            .select(from_json(col("json_str"), schema_audio).alias("data"))
             .select("data.*")
         )
 
-        # Explotar detecciones y contar por clase
-        df_detecciones = (
-            df_parsed
-            .select(
-                col("frame_id"),
-                col("timestamp"),
-                explode(col("detecciones")).alias("det"),
-            )
-            .select(
-                col("frame_id"),
-                col("timestamp"),
-                col("det.clase").alias("clase"),
-                col("det.confianza").alias("confianza"),
-            )
+        # 5. Preparación de Métricas Continuas
+        df_conteo_vehicular = (
+            df_video_parsed
+            .select(explode(col("detecciones")).alias("det"))
+            .groupBy("det.clase")
+            .count()
         )
 
-        # Escribir a consola
-        query = (
-            df_detecciones
-            .groupBy("clase")
+        df_conteo_acustico = (
+            df_audio_parsed
+            .groupBy("clase_audio")
             .count()
-            .writeStream
+        )
+
+        print("\n" + "="*70)
+        print(" 🚀 ENTORNO PYSPARK MULTIMODAL INICIADO CORRECTAMENTE")
+        print(" Escuchando transmisiones en vivo de Video y Audio... (Ctrl+C para salir)")
+        print("="*70 + "\n")
+
+        # --- GENERACIÓN DEL REPORTE UNIFICADO ---
+        estado_global = {"video": {}, "audio": {}}
+        ruta_reporte = BASE_DIR / "data" / "reporte_pipeline.txt"
+        lock_reporte = threading.Lock()
+
+        def guardar_reporte_txt():
+            """Sobreescribe el reporte unificado en disco en cada micro-batch."""
+            with lock_reporte:
+                ruta_reporte.parent.mkdir(parents=True, exist_ok=True)
+                total_vehiculos = sum(estado_global["video"].values())
+                total_audios = sum(estado_global["audio"].values())
+                
+                with open(ruta_reporte, "w", encoding="utf-8") as f:
+                    f.write("REPORTE FINAL DEL PIPELINE MULTIMODAL (VIDEO + AUDIO) - PYSPARK\n")
+                    f.write("=" * 65 + "\n")
+                    f.write(f"Última actualización: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    
+                    f.write("1. DETECCIONES VEHICULARES (YOLOv8):\n")
+                    f.write("-" * 65 + "\n")
+                    if not estado_global["video"]:
+                        f.write("  (Esperando datos de video...)\n")
+                    for clase, conteo in sorted(estado_global["video"].items(), key=lambda x: x[1], reverse=True):
+                        pct = (conteo / total_vehiculos * 100) if total_vehiculos > 0 else 0
+                        f.write(f"  {clase:<15s}: {conteo:>5} detecciones ({pct:>5.1f}%)\n")
+                        
+                    f.write("\n2. CLASIFICACIÓN DE AUDIO (CNN):\n")
+                    f.write("-" * 65 + "\n")
+                    if not estado_global["audio"]:
+                        f.write("  (Esperando datos de audio...)\n")
+                    for clase, conteo in sorted(estado_global["audio"].items(), key=lambda x: x[1], reverse=True):
+                        pct = (conteo / total_audios * 100) if total_audios > 0 else 0
+                        f.write(f"  {clase:<15s}: {conteo:>5} segmentos   ({pct:>5.1f}%)\n")
+
+        def procesar_batch_video(df_batch, batch_id):
+            print(f"\n📊 [MÉTRICA VIDEO] CONTEO DE VEHÍCULOS (YOLOv8) - Batch {batch_id}")
+            df_batch.show(truncate=False)
+            filas = df_batch.collect()
+            estado_global["video"] = {fila["clase"]: fila["count"] for fila in filas}
+            guardar_reporte_txt()
+
+        def procesar_batch_audio(df_batch, batch_id):
+            print(f"\n🔊 [MÉTRICA AUDIO] CLASIFICACIÓN ACÚSTICA URBANA (CNN) - Batch {batch_id}")
+            df_batch.show(truncate=False)
+            filas = df_batch.collect()
+            estado_global["audio"] = {fila["clase_audio"]: fila["count"] for fila in filas}
+            guardar_reporte_txt()
+
+        # 6. Lanzamiento de las dos consultas en paralelo (Multi-Query Sink con Custom ForeachBatch)
+        query_video = (
+            df_conteo_vehicular.writeStream
             .outputMode("complete")
-            .format("console")
-            .option("truncate", "false")
-            .trigger(processingTime="5 seconds")
+            .foreachBatch(procesar_batch_video)
+            .option("checkpointLocation", str(BASE_DIR / "checkpoints" / "video"))
+            .trigger(processingTime="3 seconds")
             .start()
         )
 
-        print("[INFO] Spark Streaming iniciado. Ctrl+C para detener.")
-        query.awaitTermination()
+        query_audio = (
+            df_conteo_acustico.writeStream
+            .outputMode("complete")
+            .foreachBatch(procesar_batch_audio)
+            .option("checkpointLocation", str(BASE_DIR / "checkpoints" / "audio"))
+            .trigger(processingTime="3 seconds")
+            .start()
+        )
 
-    except ImportError:
-        print("[ERROR] PySpark no está instalado. Usa: pip install pyspark")
-        print("[INFO] Usando consumidor estándar con kafka-python...")
-        consumir_y_analizar()
+        # Mantener vivos ambos streams simultáneamente
+        query_video.awaitTermination()
+        query_audio.awaitTermination()
+
     except Exception as e:
-        print(f"[ERROR] Error con Spark: {e}")
-        print("[INFO] Usando consumidor estándar con kafka-python...")
-        consumir_y_analizar()
+        print(f"\n[ERROR CRÍTICO EN ENTORNO SPARK]: {e}")
+        print(" Abortando ejecución segura. Por favor, verifique dependencias.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
